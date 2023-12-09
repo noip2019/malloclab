@@ -41,7 +41,7 @@
  * Initialize: return -1 on error, 0 on success.
  */
 int mm_init(void) {
-    return 1;
+    return 0;
 }
 
 /*
