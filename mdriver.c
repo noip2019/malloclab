@@ -42,7 +42,12 @@
 #define WALL 1
 #define WUTIL 2
 #define WPERF 3
-
+#define DEBUG
+#ifdef DEBUG
+# define dbg_printf(...) printf(__VA_ARGS__)
+#else
+# define dbg_printf(...)
+#endif
 /******************************
  * The key compound data types
  *****************************/
@@ -917,11 +922,11 @@ static int eval_mm_valid(trace_t *trace, range_t **ranges)
                 r = r->next;
             }
         }
-
+        // dbg_printf("%d %ld\n",trace->ops[i].type,size);
         switch (trace->ops[i].type) {
-
+            
         case ALLOC: /* mm_malloc */
-
+            
             /* Call the student's malloc */
             if ((p = mm_malloc(size)) == NULL) {
                 malloc_error(trace, i, "mm_malloc failed.");
