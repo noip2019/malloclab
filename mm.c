@@ -1,8 +1,6 @@
 /*
  * mm.c
- *
- * NOTE TO STUDENTS: Replace this header comment with your own header
- * comment that gives a high level description of your solution.
+ * 使用了分离适配方法，1~(1<<STACK_MIN)单独分组，（1<<STACK_MIN)+1 ~ (1<<STACK_MAX)按2的幂分组，采用首次适配的策略
  */
 #include <assert.h>
 #include <stdio.h>
