@@ -61,39 +61,55 @@
 /*Given free block ptr bp,  relative address of next and previous blocks in stack*/
 #define GET_PREV(bp)  (*(int*)(bp) + stack_root) 
 #define GET_NEXT(bp)  (*(int*)((char*)(bp) + WSIZE) + stack_root)
+/*Given free block ptr bp,  set relative address of next and previous blocks in stack*/
 #define PUT_PREV(bp, pp)  (*(int*)(bp) = (char*)(pp) - stack_root) 
 #define PUT_NEXT(bp, np)  (*(int*)((char*)(bp) + WSIZE) = (char*)(np) - stack_root)
+/*get and set the top block in stack with index np*/
 #define GET_TOP(np) (*(int*)(stack_top + (unsigned int)(np)*WSIZE) + stack_root)
 #define SET_TOP(bp, np) (*(int*)(stack_top + (unsigned int)(np)*WSIZE) = (char*)(bp) - stack_root)
 /* Function prototypes for internal helper routines */
 static void *extend_heap(size_t words);
+/// @brief 在空闲块中放置分配块并分割
+/// @param bp 空闲块
+/// @param asize 分配块大小
 static void place(void *bp, size_t asize);
+/// @brief 发现适合一定大小的空闲块
+/// @param asize 给定查找大小
+/// @return 发现适合空闲块返回指针，否则返回空指针
 static void *find_fit(size_t asize);
+/// @brief 合并一个空闲块前后的空闲块
+/// @param bp 待合并空闲块
+/// @return 返回合并后的空闲块
 static void *coalesce(void *bp);
+/// @brief 将空闲块加入堆数组中
+/// @param bp 待添加的空闲块
 static void add_stack(void *bp);
+/// @brief 从堆数组中删除空闲块
+/// @param bp 待删除空闲块
 static void delete_stack(void *bp);
+/// @brief debug时用于输出堆中和栈数组中的块信息
 static void print_heap();
+/// @brief 获取asize对应的栈数组下标
+/// @param asize 
+/// @return 返回下标
 static unsigned int get_index(unsigned int asize);
 /* Global variables */
 /*
  * Initialize: return -1 on error, 0 on success.
  */
 static char *heap_listp = NULL; /* Pointer to first block*/ 
-static char *stack_top = NULL; /* Pointer to first free block*/ 
-static char *stack_root = NULL;
-static unsigned int stack_size;
-#ifdef NEXT_FIT
-static char *rover;           /* Next fit rover */
-#endif
-#define STACK_MIN (7)
-#define STACK_MAX (10)
+static char *stack_top = NULL; /* array of Pointer to first free block*/ 
+static char *stack_root = NULL;/* 所有堆数组的首元素，作NULL使用*/
+static unsigned int stack_size;/*堆数组的长度*/
+#define STACK_MIN (7) /*精准分配的位数*/
+#define STACK_MAX (10) /*按幂分配的位数*/
 int mm_init(void) {
     /* Create the initial empty heap */
     stack_size = STACK_MAX + (1<<STACK_MIN);
     stack_root = mem_sbrk(0);
-    if ((stack_top = mem_sbrk(stack_size*WSIZE)) == (void *)-1)//指针数组，存放各个栈顶的地址
+    if ((stack_top = mem_sbrk(stack_size*WSIZE)) == (void *)-1)
         return -1;
-    memset(stack_top, 0, stack_size*WSIZE);
+    memset(stack_top, 0, stack_size*WSIZE);//为栈数组分配空间，并全部初始化为stack_root
     if ((heap_listp = mem_sbrk(6*WSIZE)) == (void *)-1) 
         return -1;
     PUT(heap_listp, PACK(0, 1));                          /* Alignment padding */
@@ -105,9 +121,6 @@ int mm_init(void) {
     stack_root = heap_listp + WSIZE;
     heap_listp += (4*WSIZE);
      
-#ifdef NEXT_FIT
-    rover = heap_listp;
-#endif
 
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL) 
         return -1;
@@ -249,12 +262,12 @@ void mm_checkheap(int lineno) {
     for(char* i=heap_listp;GET_SIZE(HDRP(i))>0;i=NEXT_BLKP(i)){
         if(GET_ALLOC(HDRP(i))==1)consist=0;
         else if(consist==1){
-            printf("EHAT DE HELL\n");
+            printf("存在未合并的空闲块\n");
             exit(-1);
         }
         else consist=1;
         if(HDRP(i)!=FTRP(i)){
-            printf("what de hell is that!");
+            printf("头尾部不同");
             exit(-1);
         }
     }
@@ -319,12 +332,6 @@ static void *coalesce(void *bp)
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
-#ifdef NEXT_FIT
-    /* Make sure the rover isn't pointing into the free block */
-    /* that we just coalesced */
-    if ((rover > (char *)bp) && (rover < NEXT_BLKP(bp))) 
-        rover = bp;
-#endif
     add_stack(bp);
     return bp;
 }
@@ -338,7 +345,7 @@ static void place(void *bp, size_t asize)
 {
     size_t csize = GET_SIZE(HDRP(bp));   
     delete_stack(bp);
-    if ((csize - asize) >= (2*DSIZE)) { 
+    if ((csize - asize) >= (2*DSIZE)) { /*分配后还可分割*/
         PUT(HDRP(bp), PACK(asize, 1));
         PUT(FTRP(bp), PACK(asize, 1));
         bp = NEXT_BLKP(bp);
@@ -347,7 +354,7 @@ static void place(void *bp, size_t asize)
         coalesce(bp);
 
     }
-    else { 
+    else { /*分配后不可分割*/
         PUT(HDRP(bp), PACK(csize, 1));
         PUT(FTRP(bp), PACK(csize, 1));
     }
@@ -364,7 +371,7 @@ static void *find_fit(size_t asize)
     for(unsigned int i=index;i<stack_size;i++){
         for (bp = GET_TOP(i); bp!=stack_root; bp = GET_PREV(bp)) {
             if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
-                return bp;
+                return bp;/*fit*/
             }
         }
     }
@@ -373,12 +380,12 @@ static void *find_fit(size_t asize)
 static void add_stack(void *bp){
     int index = get_index(GET_SIZE(HDRP(bp)));
     char* top_blk=GET_TOP(index);
-    if(top_blk==stack_root){
+    if(top_blk==stack_root){/*如果待添加的栈是空的*/
         SET_TOP(bp,index);
         PUT_PREV(bp,top_blk);
         PUT_NEXT(bp, NULL);
     }
-    else{
+    else{/*如果待添加的栈非空*/
         PUT_NEXT(top_blk,bp);
         PUT_PREV(bp,top_blk);
         PUT_NEXT(bp,NULL);
@@ -388,12 +395,12 @@ static void add_stack(void *bp){
 static void delete_stack(void *bp){
     int index = get_index(GET_SIZE(HDRP(bp)));
     char* top_blk=GET_TOP(index);
-    if(bp==top_blk){
+    if(bp==top_blk){/*如果待删除的块是栈顶*/
         char* prev_blk=GET_PREV(bp);
         SET_TOP(prev_blk,index);
         PUT_NEXT(prev_blk,NULL);
     }
-    else{
+    else{/*如果待删除的块不是栈顶*/
         char* next_block=GET_NEXT(bp);
         char* prev_block=GET_PREV(bp);
         PUT_NEXT(prev_block,next_block);
@@ -422,7 +429,6 @@ static void print_heap(){
             printf("%p %u %u %p %p\n",bp,alloc,size,prev_blk,next_blk);
         }
     }
-    return NULL; /* No fit */
 }
 static unsigned int get_index(unsigned int asize){
     unsigned int max_size=1<<STACK_MIN;
