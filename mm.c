@@ -87,7 +87,7 @@ static unsigned int stack_size;
 #ifdef NEXT_FIT
 static char *rover;           /* Next fit rover */
 #endif
-#define STACK_MIN (4)
+#define STACK_MIN (7)
 #define STACK_MAX (10)
 int mm_init(void) {
     /* Create the initial empty heap */
@@ -247,9 +247,16 @@ static int aligned(const void *p) {
  * mm_checkheap
  */
 void mm_checkheap(int lineno) {
+    int consist=0;
     for(char* i=heap_listp;GET_SIZE(HDRP(i))>0;i=NEXT_BLKP(i)){
+        if(GET_ALLOC(HDRP(i))==1)consist=0;
+        else if(consist==1){
+            printf("EHAT DE HELL\n");
+            exit(-1);
+        }
+        else consist=1;
         if(HDRP(i)!=FTRP(i)){
-            dbg_printf("what de hell is that!");
+            printf("what de hell is that!");
             exit(-1);
         }
     }
@@ -427,9 +434,9 @@ static unsigned int get_index(unsigned int asize){
         for(int i=0;i<STACK_MAX;i++){
             max_size<<=1;
             if(asize<=max_size){
-                return STACK_MAX + i;
+                return (1<<STACK_MIN) + i;
             }
         }
-        return STACK_MIN + STACK_MAX - 1;
+        return (1<<STACK_MIN) + STACK_MAX - 1;
     }
 }
