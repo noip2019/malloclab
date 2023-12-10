@@ -127,8 +127,7 @@ void *malloc (size_t size) {
 
     /* Search the free list for a fit */
     if ((bp = find_fit(asize)) != NULL) {  
-        place(bp, asize);  
-        print_heap();                
+        place(bp, asize);                 
         return bp;
     }
 
@@ -136,8 +135,7 @@ void *malloc (size_t size) {
     extendsize = MAX(asize,CHUNKSIZE);                 
     if ((bp = extend_heap(extendsize/WSIZE)) == NULL)  
         return NULL;                                  
-    place(bp, asize);           
-    print_heap();       
+    place(bp, asize);                 
     return bp;
 }
 
@@ -150,7 +148,6 @@ void free (void *ptr) {
         return;
     if(ptr == (void*)((unsigned long)0x800004460)){
         dbg_printf("waht!");
-        print_heap();
     }
     size_t size = GET_SIZE(HDRP(ptr));
     if (heap_listp == NULL){
@@ -162,7 +159,6 @@ void free (void *ptr) {
     PUT_NEXT(ptr,NULL);
     PUT_PREV(ptr,NULL);
     coalesce(ptr);
-    print_heap();
 }
 
 /*
@@ -198,7 +194,6 @@ void *realloc(void *oldptr, size_t size) {
 
     /* Free the old block. */
     mm_free(oldptr);
-    print_heap();
     return newptr;
 }
 
@@ -214,7 +209,6 @@ void *calloc (size_t nmemb, size_t size) {
 
     newptr = malloc(bytes);
     memset(newptr, 0, bytes);
-    print_heap();
     return newptr;
 }
 
@@ -393,20 +387,20 @@ static void delete_stack(void *bp){
     }
 }
 static void print_heap(){
-    dbg_printf("***\n");
+    printf("***\n");
     for(char* i=heap_listp;GET_SIZE(HDRP(i))>0;i=NEXT_BLKP(i)){
-        size_t alloc = GET_ALLOC(HDRP(i));
-        size_t size = GET_SIZE(HDRP(i));
+        unsigned int alloc = GET_ALLOC(HDRP(i));
+        unsigned int size = GET_SIZE(HDRP(i));
         char* next_blk=NEXT_BLKP(i);
         char* prev_blk=PREV_BLKP(i);
-        dbg_printf("%#p %u %u %#p %#p\n",i,alloc,size,prev_blk,next_blk);
+        printf("%p %u %u %p %p\n",i,alloc,size,prev_blk,next_blk);
     }
-    dbg_printf("&&&\n");
+    printf("&&&\n");
     for(char* i=stack_top;i!=stack_root;i=GET_PREV(i)){
-        size_t alloc = GET_ALLOC(HDRP(i));
-        size_t size = GET_SIZE(HDRP(i));
+        unsigned int alloc = GET_ALLOC(HDRP(i));
+        unsigned int size = GET_SIZE(HDRP(i));
         char* prev = GET_PREV(i);
         char* next = GET_NEXT(i);
-        dbg_printf("%#p %u %u %#p %#p\n",i,alloc,size,prev,next);
+        printf("%p %u %u %p %p\n",i,alloc,size,prev,next);
     }
 }
