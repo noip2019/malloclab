@@ -18,10 +18,8 @@
 // #define DEBUG
 #ifdef DEBUG
 # define dbg_printf(...) printf(__VA_ARGS__)
-# define dbg_print_heap(...) print_heap(__VA_ARGS__)
 #else
 # define dbg_printf(...)
-# define dbg_print_heap(...)
 #endif
 
 /* do not change the following! */
@@ -65,8 +63,6 @@
 #define GET_NEXT(bp)  (*(int*)((char*)(bp) + WSIZE) + stack_root)
 #define PUT_PREV(bp, pp)  (*(int*)(bp) = (char*)(pp) - stack_root) 
 #define PUT_NEXT(bp, np)  (*(int*)((char*)(bp) + WSIZE) = (char*)(np) - stack_root)
-#define GET_TOP(np) (*(int*)(stack_top + (unsigned int)(np)*WSIZE) + stack_root)
-#define SET_TOP(bp, np) (*(int*)(stack_top + (unsigned int)(np)*WSIZE) = (char*)(bp) - stack_root)
 /* Function prototypes for internal helper routines */
 static void *extend_heap(size_t words);
 static void place(void *bp, size_t asize);
@@ -75,7 +71,6 @@ static void *coalesce(void *bp);
 static void add_stack(void *bp);
 static void delete_stack(void *bp);
 static void print_heap();
-static unsigned int get_index(unsigned int asize);
 /* Global variables */
 /*
  * Initialize: return -1 on error, 0 on success.
@@ -83,19 +78,11 @@ static unsigned int get_index(unsigned int asize);
 static char *heap_listp = NULL; /* Pointer to first block*/ 
 static char *stack_top = NULL; /* Pointer to first free block*/ 
 static char *stack_root = NULL;
-static unsigned int stack_size;
 #ifdef NEXT_FIT
 static char *rover;           /* Next fit rover */
 #endif
-#define STACK_MIN (4)
-#define STACK_MAX (10)
 int mm_init(void) {
     /* Create the initial empty heap */
-    stack_size = STACK_MAX + (1<<STACK_MIN);
-    stack_root = mem_sbrk(0);
-    if ((stack_top = mem_sbrk(stack_size*WSIZE)) == (void *)-1)//指针数组，存放各个栈顶的地址
-        return -1;
-    memset(stack_top, 0, stack_size*WSIZE);
     if ((heap_listp = mem_sbrk(6*WSIZE)) == (void *)-1) 
         return -1;
     PUT(heap_listp, PACK(0, 1));                          /* Alignment padding */
@@ -104,9 +91,9 @@ int mm_init(void) {
     PUT(heap_listp + (3*WSIZE), PACK(DSIZE, 1)); /* Prologue header */ 
     PUT(heap_listp + (4*WSIZE), PACK(DSIZE, 1)); /* Prologue footer */ 
     PUT(heap_listp + (5*WSIZE), PACK(0, 1));     /* Epilogue header */
-    stack_root = heap_listp + WSIZE;
-    heap_listp += (4*WSIZE);
-     
+    stack_top = heap_listp + WSIZE;
+    stack_root = stack_top;
+    heap_listp += (4*WSIZE);   
 #ifdef NEXT_FIT
     rover = heap_listp;
 #endif
@@ -140,8 +127,7 @@ void *malloc (size_t size) {
 
     /* Search the free list for a fit */
     if ((bp = find_fit(asize)) != NULL) {  
-        place(bp, asize);      
-        dbg_print_heap();           
+        place(bp, asize);                 
         return bp;
     }
 
@@ -149,8 +135,7 @@ void *malloc (size_t size) {
     extendsize = MAX(asize,CHUNKSIZE);                 
     if ((bp = extend_heap(extendsize/WSIZE)) == NULL)  
         return NULL;                                  
-    place(bp, asize);   
-    dbg_print_heap();              
+    place(bp, asize);                 
     return bp;
 }
 
@@ -161,16 +146,19 @@ void free (void *ptr) {
     dbg_printf("free %p\n",ptr);
     if (ptr == 0) 
         return;
+    if(ptr == (void*)((unsigned long)0x800004460)){
+        dbg_printf("waht!");
+    }
     size_t size = GET_SIZE(HDRP(ptr));
     if (heap_listp == NULL){
         mm_init();
     }
+
     PUT(HDRP(ptr), PACK(size, 0));
     PUT(FTRP(ptr), PACK(size, 0));
     PUT_NEXT(ptr,NULL);
     PUT_PREV(ptr,NULL);
     coalesce(ptr);
-    dbg_print_heap();
 }
 
 /*
@@ -206,7 +194,6 @@ void *realloc(void *oldptr, size_t size) {
 
     /* Free the old block. */
     mm_free(oldptr);
-    dbg_print_heap();
     return newptr;
 }
 
@@ -222,7 +209,6 @@ void *calloc (size_t nmemb, size_t size) {
 
     newptr = malloc(bytes);
     memset(newptr, 0, bytes);
-    dbg_print_heap();
     return newptr;
 }
 
@@ -303,6 +289,7 @@ static void *coalesce(void *bp)
         PUT(FTRP(bp), PACK(size, 0));
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
+        
     }
 
     else {                                     /* Case 4 */
@@ -353,40 +340,43 @@ static void place(void *bp, size_t asize)
  */
 static void *find_fit(size_t asize)
 {
+#ifdef NEXT_FIT 
+    /* Next fit search */
+    char *oldrover = rover;
+
+    /* Search from the rover to the end of list */
+    for ( ; GET_SIZE(HDRP(rover)) > 0; rover = NEXT_BLKP(rover))
+        if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
+            return rover;
+
+    /* search from start of list to old rover */
+    for (rover = heap_listp; rover < oldrover; rover = NEXT_BLKP(rover))
+        if (!GET_ALLOC(HDRP(rover)) && (asize <= GET_SIZE(HDRP(rover))))
+            return rover;
+
+    return NULL;  /* no fit found */
+#else 
     /* First-fit search */
     void *bp;
-    unsigned int index = get_index(asize);
-    for(unsigned int i=index;i<stack_size;i++){
-        for (bp = GET_TOP(i); bp!=stack_root; bp = GET_PREV(bp)) {
-            if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
-                return bp;
-            }
+
+    for (bp = stack_top; GET_SIZE(HDRP(bp)) > 0; bp = GET_PREV(bp)) {
+        if (!GET_ALLOC(HDRP(bp)) && (asize <= GET_SIZE(HDRP(bp)))) {
+            return bp;
         }
     }
     return NULL; /* No fit */
+#endif
 }
 static void add_stack(void *bp){
-    int index = get_index(GET_SIZE(HDRP(bp)));
-    char* top_blk=GET_TOP(index);
-    if(top_blk==stack_root){
-        SET_TOP(bp,index);
-        PUT_PREV(bp,top_blk);
-        PUT_NEXT(bp, NULL);
-    }
-    else{
-        PUT_NEXT(top_blk,bp);
-        PUT_PREV(bp,top_blk);
-        PUT_NEXT(bp,NULL);
-        SET_TOP(bp,index);
-    }
+    PUT_NEXT(stack_top, bp);
+    PUT_PREV(bp, stack_top);
+    PUT_NEXT(bp, NULL);
+    stack_top = bp;
 }
 static void delete_stack(void *bp){
-    int index = get_index(GET_SIZE(HDRP(bp)));
-    char* top_blk=GET_TOP(index);
-    if(bp==top_blk){
-        char* prev_blk=GET_PREV(bp);
-        SET_TOP(prev_blk,index);
-        PUT_NEXT(prev_blk,NULL);
+    if(bp==stack_top){
+        stack_top = GET_PREV(bp);
+        PUT_NEXT(stack_top,NULL);
     }
     else{
         char* next_block=GET_NEXT(bp);
@@ -406,30 +396,11 @@ static void print_heap(){
         printf("%p %u %u %p %p\n",i,alloc,size,prev_blk,next_blk);
     }
     printf("&&&\n");
-    for(unsigned int i=0;i<stack_size;i++){
-        printf("%u:",i);
-        char* bp = GET_TOP(i);
-        for (; bp!=stack_root; bp = GET_PREV(bp)) {
-            unsigned int alloc = GET_ALLOC(HDRP(bp));
-            unsigned int size = GET_SIZE(HDRP(bp));
-            char* next_blk=GET_NEXT(bp);
-            char* prev_blk=GET_PREV(bp);
-            printf("%p %u %u %p %p\n",bp,alloc,size,prev_blk,next_blk);
-        }
-    }
-    return NULL; /* No fit */
-}
-static unsigned int get_index(unsigned int asize){
-    unsigned int max_size=1<<STACK_MIN;
-    if(asize<=max_size)
-        return asize-1;
-    else{
-        for(int i=0;i<STACK_MAX;i++){
-            max_size<<=1;
-            if(asize<=max_size){
-                return STACK_MAX + i;
-            }
-        }
-        return STACK_MIN + STACK_MAX - 1;
+    for(char* i=stack_top;i!=stack_root;i=GET_PREV(i)){
+        unsigned int alloc = GET_ALLOC(HDRP(i));
+        unsigned int size = GET_SIZE(HDRP(i));
+        char* prev = GET_PREV(i);
+        char* next = GET_NEXT(i);
+        printf("%p %u %u %p %p\n",i,alloc,size,prev,next);
     }
 }
