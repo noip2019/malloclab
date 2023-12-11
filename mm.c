@@ -1,6 +1,8 @@
 /*
  * mm.c
  * 使用了分离适配方法，1~(1<<STACK_MIN)单独分组，（1<<STACK_MIN)+1 ~ (1<<STACK_MAX)按2的幂分组，采用首次适配的策略
+ * 由于大小不超过2^32,故使用WSIZE存储地址偏移
+ * 去掉了已分配块的尾部
  */
 #include <assert.h>
 #include <stdio.h>
@@ -35,7 +37,7 @@
 #define ALIGNMENT 8 
 #define WSIZE 4 /*word size*/
 #define DSIZE 8 
-#define CHUNKSIZE  (1<<12)
+#define CHUNKSIZE  (1<<13)
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(p) (((size_t)(p) + (ALIGNMENT-1)) & ~0x7)
 #define MAX(x, y) ((x) > (y)? (x) : (y))  
@@ -53,9 +55,6 @@
 #define GET_PREV_FREE(p) (GET(((char*)(p)-WSIZE)) & 0x2) //去尾部专用
 #define SET_PREV_FREE(p) (GET(((char*)(p)-WSIZE)) |= 0x2) //去尾部专用
 #define RM_PREV_FREE(p) (GET(((char*)(p)-WSIZE)) &= ~0x2) //去尾部专用
-#define GET_PREV_MINI(p) (GET(((char*)(p)-WSIZE)) & 0x4) //mini_block专用
-#define SET_PREV_MINI(p) (GET(((char*)(p)-WSIZE)) |= 0x4) //mini_block专用
-#define RM_PREV_MINI(p) (GET(((char*)(p)-WSIZE)) &= ~0x4) //mini_block专用
 /* Given block ptr bp, compute address of its header and footer */
 #define HDRP(bp)       ((char *)(bp) - WSIZE)                      
 #define FTRP(bp)       ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE) 
@@ -140,12 +139,14 @@ void *malloc (size_t size) {
     size_t asize;      /* Adjusted block size */
     size_t extendsize; /* Amount to extend heap if no fit */
     char *bp;      
+
     if (heap_listp == 0){
         mm_init();
     }
     /* Ignore spurious requests */
     if (size == 0)
         return NULL;
+
     /* Adjust block size to include overhead and alignment reqs. */
     if (size <= DSIZE)                                          
         asize = 2*DSIZE;                                        
@@ -176,16 +177,12 @@ void free (void *ptr) {
     if (ptr == 0) 
         return;
     size_t size = GET_SIZE(HDRP(ptr));
-    size_t prev_mini = GET_PREV_MINI(ptr);
     unsigned int prev_free = GET_PREV_FREE(ptr);
     if (heap_listp == NULL){
         mm_init();
     }
     PUT(HDRP(ptr), PACK(size, 0));
-    if(size>DSIZE)
-        PUT(FTRP(ptr), PACK(size, 0));
-    if(prev_mini)
-        SET_PREV_MINI(ptr);
+    PUT(FTRP(ptr), PACK(size, 0));
     if(prev_free)
         SET_PREV_FREE(ptr);
     SET_PREV_FREE(NEXT_BLKP(ptr));
@@ -290,28 +287,20 @@ static void *extend_heap(size_t words)
 
     /* Allocate an even number of words to maintain alignment */
     size = (words % 2) ? (words+1) * WSIZE : words * WSIZE; 
-    if(size <= DSIZE)size= DSIZE;//显式空闲链表前后继
+    if(size <= 2*DSIZE)size= 2*DSIZE;//显式空闲链表前后继
     char* oldbp = mem_sbrk(0);
     int alloc=GET_ALLOC(HDRP(oldbp));
-    int mini = GET_SIZE(HDRP(oldbp))==DSIZE;
     if ((long)(bp = mem_sbrk(size)) == -1)  
         return NULL;                                        
 
     /* Initialize free block header/footer and the epilogue header */
     PUT(HDRP(bp), PACK(size, 0));         /* Free block header */   
-    if(size>DSIZE)
-        PUT(FTRP(bp), PACK(size, 0));         /* Free block footer */
-
+    PUT(FTRP(bp), PACK(size, 0));         /* Free block footer */
     if(!alloc)
         SET_PREV_FREE(bp);
-    if(mini)
-        SET_PREV_MINI(bp);
-    
     PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); /* New epilogue header */
-    
+
     SET_PREV_FREE(NEXT_BLKP(bp));
-    if(size==DSIZE)
-        SET_PREV_MINI(NEXT_BLKP(bp));
     /* Coalesce if the previous block was free */
     return coalesce(bp);                                          
 }
@@ -322,56 +311,34 @@ static void *extend_heap(size_t words)
 static void *coalesce(void *bp) 
 {
     size_t prev_alloc = !GET_PREV_FREE(bp);
-    size_t prev_mini = GET_PREV_MINI(bp);
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t size = GET_SIZE(HDRP(bp));
-    char* prev_blk = prev_mini ? (char*)(bp)-DSIZE : PREV_BLKP(bp);
+
     if (prev_alloc && next_alloc) {            /* Case 1 */
         
     }
+
     else if (prev_alloc && !next_alloc) {      /* Case 2 */
         delete_stack(NEXT_BLKP(bp));
         size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
         PUT(HDRP(bp), PACK(size, 0));
         PUT(FTRP(bp), PACK(size,0));
-
-        RM_PREV_MINI(NEXT_BLKP(bp));
-
-        if(prev_mini)
-            SET_PREV_MINI(bp);
-        
     }
     else if (!prev_alloc && next_alloc) {      /* Case 3 */
-        size_t prev_prev_mini = GET_PREV_MINI(prev_blk);
-
-        delete_stack(prev_blk);
-        size += GET_SIZE(HDRP(prev_blk));
+        delete_stack(PREV_BLKP(bp));
+        size += GET_SIZE(HDRP(PREV_BLKP(bp)));
         PUT(FTRP(bp), PACK(size, 0));
-        PUT(HDRP(prev_blk), PACK(size, 0));
-        
-        RM_PREV_MINI(NEXT_BLKP(bp));
-        
-        if(prev_prev_mini)
-            SET_PREV_MINI(prev_blk);
-
-        bp = prev_blk;
+        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
+        bp = PREV_BLKP(bp);
     }
     else {                                     /* Case 4 */
-        size_t prev_prev_mini = GET_PREV_MINI(prev_blk);
-
-        delete_stack(prev_blk);
+        delete_stack(PREV_BLKP(bp));
         delete_stack(NEXT_BLKP(bp));
-        size += GET_SIZE(HDRP(prev_blk)) + GET_SIZE(HDRP(NEXT_BLKP(bp)));
-        PUT(HDRP(prev_blk), PACK(size, 0));
+        size += GET_SIZE(HDRP(PREV_BLKP(bp))) + 
+        GET_SIZE(FTRP(NEXT_BLKP(bp)));
+        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0));
-
-        if(NEXT_BLKP(NEXT_BLKP(bp)))
-            RM_PREV_MINI(NEXT_BLKP(NEXT_BLKP(bp)));
-        
-        if(prev_prev_mini)
-            SET_PREV_MINI(prev_blk);
-        
-        bp = prev_blk;
+        bp = PREV_BLKP(bp);
     }
     add_stack(bp);
     return bp;
@@ -385,28 +352,17 @@ static void *coalesce(void *bp)
 static void place(void *bp, size_t asize)
 {
     size_t csize = GET_SIZE(HDRP(bp));   
-    size_t prev_mini = GET_PREV_MINI(bp);
     delete_stack(bp);
-    if ((csize - asize) >= DSIZE) { /*分配后还可分割*/
+    if ((csize - asize) >= (2*DSIZE)) { /*分配后还可分割*/
         PUT(HDRP(bp), PACK(asize, 1));
-        if(prev_mini)
-            SET_PREV_MINI(bp);
-        
         bp = NEXT_BLKP(bp);
         PUT(HDRP(bp), PACK(csize-asize, 0));
-        if(asize==DSIZE)
-            SET_PREV_MINI(bp);
         PUT(FTRP(bp), PACK(csize-asize, 0));
-        if(csize-asize==DSIZE)
-            SET_PREV_MINI(NEXT_BLKP(bp));
-        
         coalesce(bp);
 
     }
     else { /*分配后不可分割*/
         PUT(HDRP(bp), PACK(csize, 1));
-        if(prev_mini)
-            SET_PREV_MINI(bp);
         RM_PREV_FREE(NEXT_BLKP(bp));
     }
 }
@@ -431,12 +387,6 @@ static void *find_fit(size_t asize)
 static void add_stack(void *bp){
     int index = get_index(GET_SIZE(HDRP(bp)));
     char* top_blk=GET_TOP(index);
-    if(GET_SIZE(HDRP(bp))==DSIZE)
-    {
-        PUT_PREV(bp,top_blk);
-        SET_TOP(bp,index);
-        return;
-    }
     if(top_blk==stack_root){/*如果待添加的栈是空的*/
         SET_TOP(bp,index);
         PUT_PREV(bp,top_blk);
@@ -452,23 +402,6 @@ static void add_stack(void *bp){
 static void delete_stack(void *bp){
     int index = get_index(GET_SIZE(HDRP(bp)));
     char* top_blk=GET_TOP(index);
-    if(GET_SIZE(HDRP(bp))==DSIZE)
-    {
-        if(top_blk==bp){
-            char* prev_blk=GET_PREV(bp);
-            SET_TOP(prev_blk,index);
-            return;
-        }
-        for(char* i=top_blk;i!=stack_root;i=GET_PREV(i))
-        {
-            if(GET_PREV(i)==bp){
-                PUT_PREV(i,GET_PREV(bp));
-                return;
-            }
-        }
-        printf("WHAT DA HELL\n");
-        exit(-1);
-    }
     if(bp==top_blk){/*如果待删除的块是栈顶*/
         char* prev_blk=GET_PREV(bp);
         SET_TOP(prev_blk,index);
@@ -489,8 +422,7 @@ static void print_heap(){
         unsigned int size = GET_SIZE(HDRP(i));
         unsigned int prev_alloc = GET_PREV_FREE(i)==0;
         char* next_blk=NEXT_BLKP(i);
-        size_t prev_mini = GET_PREV_MINI(i);
-        char* prev_blk = prev_mini ? (char*)(i)-DSIZE : PREV_BLKP(i);
+        char* prev_blk=PREV_BLKP(i);
         printf("%p %u %u %u %p %p\n",i,alloc,size,prev_alloc,prev_blk,next_blk);
     }
     printf("&&&\n");
@@ -501,7 +433,6 @@ static void print_heap(){
             unsigned int alloc = GET_ALLOC(HDRP(bp));
             unsigned int size = GET_SIZE(HDRP(bp));
             unsigned int prev_alloc = GET_PREV_FREE(bp)==0;
-            size_t prev_mini = GET_PREV_MINI(bp);
             char* next_blk=GET_NEXT(bp);
             char* prev_blk=GET_PREV(bp);
             printf("%p %u %u %u %p %p\n",bp,alloc,size,prev_alloc,prev_blk,next_blk);
