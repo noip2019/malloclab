@@ -37,7 +37,7 @@
 #define ALIGNMENT 8 
 #define WSIZE 4 /*word size*/
 #define DSIZE 8 
-#define CHUNKSIZE  (1<<13)
+#define CHUNKSIZE  (1<<11)
 /* rounds up to the nearest multiple of ALIGNMENT */
 #define ALIGN(p) (((size_t)(p) + (ALIGNMENT-1)) & ~0x7)
 #define MAX(x, y) ((x) > (y)? (x) : (y))  
@@ -106,11 +106,11 @@ static char *heap_listp = NULL; /* Pointer to first block*/
 static char *stack_top = NULL; /* array of Pointer to first free block*/ 
 static char *stack_root = NULL;/* 所有堆数组的首元素，作NULL使用*/
 static unsigned int stack_size;/*堆数组的长度*/
-#define STACK_MIN (7) /*精准分配的位数*/
-#define STACK_MAX (10) /*按幂分配的位数*/
+#define STACK_MIN (5) /*精准分配的位数*/
+#define STACK_MAX (20) /*按幂分配的位数*/
 int mm_init(void) {
     /* Create the initial empty heap */
-    stack_size = STACK_MAX + (1<<STACK_MIN);
+    stack_size = STACK_MAX + STACK_MIN-1;
     stack_root = mem_sbrk(0);
     if ((stack_top = mem_sbrk(stack_size*WSIZE)) == (void *)-1)
         return -1;
@@ -440,16 +440,13 @@ static void print_heap(){
     }
 }
 static unsigned int get_index(unsigned int asize){
-    unsigned int max_size=1<<STACK_MIN;
-    if(asize<=max_size)
-        return asize-1;
-    else{
-        for(int i=0;i<STACK_MAX;i++){
-            max_size<<=1;
-            if(asize<=max_size){
-                return (1<<STACK_MIN) + i;
-            }
+    unsigned int max_size=(1<<STACK_MIN);
+    if(asize<=max_size)return asize/8 - 1;
+    for(int i=0;i<STACK_MAX;i++){
+        max_size<<=1;
+        if(asize<=max_size){
+            return i+STACK_MIN-1;
         }
-        return (1<<STACK_MIN) + STACK_MAX - 1;
     }
+    return STACK_MAX+STACK_MIN-2;
 }
