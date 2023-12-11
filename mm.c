@@ -50,7 +50,9 @@
 /* Read the size and allocated fields from address p */
 #define GET_SIZE(p)  (GET(p) & ~0x7)                   
 #define GET_ALLOC(p) (GET(p) & 0x1)                    
-
+#define GET_PREV_FREE(p) (GET(((char*)(p)-WSIZE)) & 0x2) //去尾部专用
+#define SET_PREV_FREE(p) (GET(((char*)(p)-WSIZE)) |= 0x2) //去尾部专用
+#define RM_PREV_FREE(p) (GET(((char*)(p)-WSIZE)) &= ~0x2) //去尾部专用
 /* Given block ptr bp, compute address of its header and footer */
 #define HDRP(bp)       ((char *)(bp) - WSIZE)                      
 #define FTRP(bp)       ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE) 
@@ -67,6 +69,7 @@
 /*get and set the top block in stack with index np*/
 #define GET_TOP(np) (*(int*)(stack_top + (unsigned int)(np)*WSIZE) + stack_root)
 #define SET_TOP(bp, np) (*(int*)(stack_top + (unsigned int)(np)*WSIZE) = (char*)(bp) - stack_root)
+
 /* Function prototypes for internal helper routines */
 static void *extend_heap(size_t words);
 /// @brief 在空闲块中放置分配块并分割
@@ -120,7 +123,6 @@ int mm_init(void) {
     PUT(heap_listp + (5*WSIZE), PACK(0, 1));     /* Epilogue header */
     stack_root = heap_listp + WSIZE;
     heap_listp += (4*WSIZE);
-     
 
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL) 
         return -1;
@@ -147,7 +149,7 @@ void *malloc (size_t size) {
     if (size <= DSIZE)                                          
         asize = 2*DSIZE;                                        
     else
-        asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE); 
+        asize = DSIZE * ((size + (WSIZE) + (DSIZE-1)) / DSIZE); 
 
     /* Search the free list for a fit */
     if ((bp = find_fit(asize)) != NULL) {  
@@ -173,11 +175,15 @@ void free (void *ptr) {
     if (ptr == 0) 
         return;
     size_t size = GET_SIZE(HDRP(ptr));
+    unsigned int prev_free = GET_PREV_FREE(ptr);
     if (heap_listp == NULL){
         mm_init();
     }
     PUT(HDRP(ptr), PACK(size, 0));
     PUT(FTRP(ptr), PACK(size, 0));
+    if(prev_free)
+        SET_PREV_FREE(ptr);
+    SET_PREV_FREE(NEXT_BLKP(ptr));
     PUT_NEXT(ptr,NULL);
     PUT_PREV(ptr,NULL);
     coalesce(ptr);
@@ -258,20 +264,16 @@ static int aligned(const void *p) {
  * mm_checkheap
  */
 void mm_checkheap(int lineno) {
-    int consist=0;
+    unsigned int prev_alloc=1;
     for(char* i=heap_listp;GET_SIZE(HDRP(i))>0;i=NEXT_BLKP(i)){
-        if(GET_ALLOC(HDRP(i))==1)consist=0;
-        else if(consist==1){
-            printf("存在未合并的空闲块\n");
+        unsigned int alloc = GET_ALLOC(HDRP(i));
+        if(prev_alloc==0 && alloc==0)
+        {
+            printf("fail coaleacing\n");
             exit(-1);
         }
-        else consist=1;
-        if(HDRP(i)!=FTRP(i)){
-            printf("头尾部不同");
-            exit(-1);
-        }
+        prev_alloc = alloc;
     }
-    lineno = lineno; /* keep gcc happy */
 }
 /* 
  * extend_heap - Extend heap with free block and return its block pointer
@@ -284,13 +286,19 @@ static void *extend_heap(size_t words)
     /* Allocate an even number of words to maintain alignment */
     size = (words % 2) ? (words+1) * WSIZE : words * WSIZE; 
     if(size <= 2*DSIZE)size= 2*DSIZE;//显式空闲链表前后继
+    char* oldbp = mem_sbrk(0);
+    int alloc=GET_ALLOC(HDRP(oldbp));
     if ((long)(bp = mem_sbrk(size)) == -1)  
         return NULL;                                        
 
     /* Initialize free block header/footer and the epilogue header */
     PUT(HDRP(bp), PACK(size, 0));         /* Free block header */   
     PUT(FTRP(bp), PACK(size, 0));         /* Free block footer */
+    if(!alloc)
+        SET_PREV_FREE(bp);
     PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); /* New epilogue header */
+
+    SET_PREV_FREE(NEXT_BLKP(bp));
     /* Coalesce if the previous block was free */
     return coalesce(bp);                                          
 }
@@ -300,7 +308,7 @@ static void *extend_heap(size_t words)
  */
 static void *coalesce(void *bp) 
 {
-    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
+    size_t prev_alloc = !GET_PREV_FREE(bp);
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t size = GET_SIZE(HDRP(bp));
 
@@ -314,7 +322,6 @@ static void *coalesce(void *bp)
         PUT(HDRP(bp), PACK(size, 0));
         PUT(FTRP(bp), PACK(size,0));
     }
-
     else if (!prev_alloc && next_alloc) {      /* Case 3 */
         delete_stack(PREV_BLKP(bp));
         size += GET_SIZE(HDRP(PREV_BLKP(bp)));
@@ -322,7 +329,6 @@ static void *coalesce(void *bp)
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0));
         bp = PREV_BLKP(bp);
     }
-
     else {                                     /* Case 4 */
         delete_stack(PREV_BLKP(bp));
         delete_stack(NEXT_BLKP(bp));
@@ -347,7 +353,6 @@ static void place(void *bp, size_t asize)
     delete_stack(bp);
     if ((csize - asize) >= (2*DSIZE)) { /*分配后还可分割*/
         PUT(HDRP(bp), PACK(asize, 1));
-        PUT(FTRP(bp), PACK(asize, 1));
         bp = NEXT_BLKP(bp);
         PUT(HDRP(bp), PACK(csize-asize, 0));
         PUT(FTRP(bp), PACK(csize-asize, 0));
@@ -356,7 +361,7 @@ static void place(void *bp, size_t asize)
     }
     else { /*分配后不可分割*/
         PUT(HDRP(bp), PACK(csize, 1));
-        PUT(FTRP(bp), PACK(csize, 1));
+        RM_PREV_FREE(NEXT_BLKP(bp));
     }
 }
 
@@ -413,9 +418,10 @@ static void print_heap(){
     for(char* i=heap_listp;GET_SIZE(HDRP(i))>0;i=NEXT_BLKP(i)){
         unsigned int alloc = GET_ALLOC(HDRP(i));
         unsigned int size = GET_SIZE(HDRP(i));
+        unsigned int prev_alloc = GET_PREV_FREE(i)==0;
         char* next_blk=NEXT_BLKP(i);
         char* prev_blk=PREV_BLKP(i);
-        printf("%p %u %u %p %p\n",i,alloc,size,prev_blk,next_blk);
+        printf("%p %u %u %u %p %p\n",i,alloc,size,prev_alloc,prev_blk,next_blk);
     }
     printf("&&&\n");
     for(unsigned int i=0;i<stack_size;i++){
@@ -424,9 +430,10 @@ static void print_heap(){
         for (; bp!=stack_root; bp = GET_PREV(bp)) {
             unsigned int alloc = GET_ALLOC(HDRP(bp));
             unsigned int size = GET_SIZE(HDRP(bp));
+            unsigned int prev_alloc = GET_PREV_FREE(bp)==0;
             char* next_blk=GET_NEXT(bp);
             char* prev_blk=GET_PREV(bp);
-            printf("%p %u %u %p %p\n",bp,alloc,size,prev_blk,next_blk);
+            printf("%p %u %u %u %p %p\n",bp,alloc,size,prev_alloc,prev_blk,next_blk);
         }
     }
 }
